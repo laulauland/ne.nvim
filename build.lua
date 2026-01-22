@@ -25,7 +25,12 @@ end
 
 coroutine.yield("Model not found, preparing download...")
 
-if not command_exists("huggingface-cli") then
+local hf_cmd = nil
+if command_exists("huggingface-cli") then
+  hf_cmd = "huggingface-cli"
+elseif command_exists("hf") then
+  hf_cmd = "hf"
+else
   error(
     "huggingface-cli not found. Install it with:\n"
       .. "  pip install huggingface-hub\n"
@@ -43,7 +48,8 @@ coroutine.yield("Downloading model from HuggingFace (~1.5GB)...")
 coroutine.yield("This may take a while depending on your connection...")
 
 local cmd = string.format(
-  "huggingface-cli download %s %s --local-dir %s",
+  "%s download %s %s --local-dir %s",
+  hf_cmd,
   REPO_ID,
   MODEL_FILE,
   vim.fn.shellescape(MODEL_DIR)

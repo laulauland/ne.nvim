@@ -1,6 +1,6 @@
 # ne.nvim
 
-Neovim plugin for next-edit prediction using [sweep-next-edit-1.5B](https://huggingface.co/sweepai/sweep-next-edit-1.5B). Predicts your next code edit before you make it.
+Neovim plugin for next-edit prediction using [sweep-next-edit-1.5B](https://huggingface.co/sweepai/sweep-next-edit-1.5B).
 
 ## Requirements
 
@@ -10,7 +10,7 @@ Neovim plugin for next-edit prediction using [sweep-next-edit-1.5B](https://hugg
 
 ```bash
 # Install huggingface-cli
-pip install huggingface-hub
+brew install huggingface-cli
 
 # Install llama.cpp (example for macOS)
 brew install llama.cpp
@@ -27,8 +27,7 @@ brew install llama.cpp
   config = function()
     require("ne").setup({
       server = {
-        auto_start = true,
-        gpu_layers = 99,
+        auto_start = true, -- by default it doesn't start on nvim bootup
       },
     })
   end,

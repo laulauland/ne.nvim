@@ -136,6 +136,10 @@ local function setup_commands()
   vim.api.nvim_create_user_command("NeLogs", function()
     server.show_logs()
   end, { desc = "Show llama server logs" })
+
+  vim.api.nvim_create_user_command("NeClearLogs", function()
+    server.clear_logs()
+  end, { desc = "Clear llama server logs" })
 end
 
 local function setup_cleanup()
@@ -175,5 +179,6 @@ M.server_stop = server.stop
 M.server_restart = server.restart
 M.server_status = server.get_status
 M.server_logs = server.show_logs
+M.server_clear_logs = server.clear_logs
 
 return M

@@ -47,6 +47,27 @@ local function create_output_buffer()
   return M.output_buf
 end
 
+local function parse_log_level(line)
+  if line:match("error") or line:match("failed") or line:match("ERROR") then
+    return "ERROR"
+  elseif line:match("warn") or line:match("WARN") then
+    return "WARN"
+  elseif line:match("init") or line:match("load") or line:match("start") then
+    return "INFO"
+  else
+    return "DEBUG"
+  end
+end
+
+local function format_log_line(line)
+  if line == "" then
+    return nil
+  end
+  local timestamp = os.date("%H:%M:%S")
+  local level = parse_log_level(line)
+  return string.format("[%s] [%s] %s", timestamp, level, line)
+end
+
 local function append_output(data)
   if not M.output_buf or not vim.api.nvim_buf_is_valid(M.output_buf) then
     return
@@ -56,8 +77,17 @@ local function append_output(data)
     if not vim.api.nvim_buf_is_valid(M.output_buf) then
       return
     end
-    local lines = vim.split(data, "\n", { trimempty = false })
-    vim.api.nvim_buf_set_lines(M.output_buf, -1, -1, false, lines)
+    local raw_lines = vim.split(data, "\n", { trimempty = false })
+    local formatted_lines = {}
+    for _, line in ipairs(raw_lines) do
+      local formatted = format_log_line(line)
+      if formatted then
+        table.insert(formatted_lines, formatted)
+      end
+    end
+    if #formatted_lines > 0 then
+      vim.api.nvim_buf_set_lines(M.output_buf, -1, -1, false, formatted_lines)
+    end
   end)
 end
 
@@ -81,6 +111,14 @@ function M.start(callback)
 
   M.status = "starting"
   vim.notify("ne: Starting server...", vim.log.levels.INFO)
+
+  local startup_msg = string.format(
+    "[%s] [INFO] === ne.nvim server starting ===\n[%s] [INFO] command: %s",
+    os.date("%H:%M:%S"),
+    os.date("%H:%M:%S"),
+    table.concat(cmd, " ")
+  )
+  vim.api.nvim_buf_set_lines(M.output_buf, 0, -1, false, vim.split(startup_msg, "\n"))
 
   M.job_id = vim.fn.jobstart(cmd, {
     on_stdout = function(_, data)
@@ -183,6 +221,14 @@ function M.show_logs()
   vim.cmd("split")
   vim.api.nvim_win_set_buf(0, M.output_buf)
   vim.cmd("normal! G")
+end
+
+function M.clear_logs()
+  if not M.output_buf or not vim.api.nvim_buf_is_valid(M.output_buf) then
+    return
+  end
+  vim.api.nvim_buf_set_lines(M.output_buf, 0, -1, false, {})
+  vim.notify("ne: Logs cleared", vim.log.levels.INFO)
 end
 
 return M
