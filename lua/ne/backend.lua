@@ -6,17 +6,7 @@ local M = {}
 
 local FILE_SEP = "<|file_sep|>"
 local STOP_TOKENS = { "<|file_sep|>", "</s>", "<|endoftext|>" }
-
---- Parse truncation header from content
---- @param content string Content that may have [lines X-Y of Z] header
---- @return string|nil Truncation info as "X-Y/Z" or nil if not truncated
-local function parse_truncation(content)
-  local start_line, end_line, total = content:match("^%[lines (%d+)%-(%d+) of (%d+)%]")
-  if start_line then
-    return string.format("%s-%s/%s", start_line, end_line, total)
-  end
-  return nil
-end
+local WINDOW_SIZE = 21 -- Fixed 21-line window (10 above + cursor + 10 below)
 
 --- Log debug metadata to JSONL file
 --- @param meta table Metadata table with request info
@@ -38,36 +28,30 @@ local function debug_log(meta)
   end
 end
 
---- Build prompt for completion request
+--- Build prompt for completion request using 21-line cursor windows
 --- @param file_path string Path to the file being edited
 --- @param original_content string Original file content
 --- @param current_content string Current file content
+--- @param cursor_line number Current cursor line (1-indexed)
 --- @param context_files table<string, string> Additional context files
 --- @param recent_diffs table Recent diffs for context
 --- @return string prompt The built prompt
 --- @return table meta Metadata about the prompt contents
-function M.build_prompt(file_path, original_content, current_content, context_files, recent_diffs)
+function M.build_prompt(file_path, original_content, current_content, cursor_line, context_files, recent_diffs)
   context_files = context_files or {}
   recent_diffs = recent_diffs or diff.get_recent_diffs()
 
   local max_prompt_size = config.get("max_prompt_size") or 8192
 
-  -- Reserve space for context/diffs (at least 20% of budget)
-  local max_file_content_size = math.floor(max_prompt_size * 0.8 / 2) -- Split between original and current
-  local header_overhead = #FILE_SEP * 3 + #"original/" + #"current/" + #"updated/" + #file_path * 3 + 10
-
-  -- Smart context extraction: focus on the region where changes are happening
-  local extracted_original, extracted_current = util.extract_edit_context(
-    original_content,
-    current_content,
-    max_file_content_size,
-    100 -- context lines around diff
-  )
+  -- Extract 21-line windows centered on cursor
+  local original_window = util.extract_cursor_window(original_content, cursor_line, WINDOW_SIZE)
+  local current_window = util.extract_cursor_window(current_content, cursor_line, WINDOW_SIZE)
 
   local parts = {}
 
   -- Calculate base size (file content that we always need)
-  local base_size = header_overhead + #extracted_original + #extracted_current
+  local header_overhead = #FILE_SEP * 3 + #"original/" + #"current/" + #"updated/" + #file_path * 3 + 10
+  local base_size = header_overhead + #original_window + #current_window
 
   local remaining_budget = max_prompt_size - base_size
 
@@ -91,9 +75,8 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
     local orig = d.original or ""
     local upd = d.updated or ""
     if orig ~= "" or upd ~= "" then
-      local entry = FILE_SEP .. d.file_path .. ".diff\n"
-        .. "original:\n" .. orig .. "\n"
-        .. "updated:\n" .. upd
+      local entry = FILE_SEP .. "original/" .. d.file_path .. "\n" .. orig .. "\n"
+        .. FILE_SEP .. "updated/" .. d.file_path .. "\n" .. upd
       local entry_size = #entry + 1
       if remaining_budget >= entry_size then
         table.insert(diff_parts, 1, entry) -- prepend to maintain order
@@ -111,10 +94,11 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
     table.insert(parts, part)
   end
 
+  -- Main file content - raw 21-line windows, no headers
   table.insert(parts, FILE_SEP .. "original/" .. file_path)
-  table.insert(parts, extracted_original)
+  table.insert(parts, original_window)
   table.insert(parts, FILE_SEP .. "current/" .. file_path)
-  table.insert(parts, extracted_current)
+  table.insert(parts, current_window)
   table.insert(parts, FILE_SEP .. "updated/" .. file_path)
 
   local prompt = table.concat(parts, "\n")
@@ -122,10 +106,9 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
   -- Build metadata
   local meta = {
     file = file_path,
-    orig_size = #extracted_original,
-    orig_truncated = parse_truncation(extracted_original),
-    curr_size = #extracted_current,
-    curr_truncated = parse_truncation(extracted_current),
+    cursor_line = cursor_line,
+    orig_window_size = #original_window,
+    curr_window_size = #current_window,
     diffs = diffs_count,
     ctx_files = ctx_files_count,
     prompt_size = #prompt,
@@ -215,6 +198,10 @@ function M.get_completion(bufnr, callback)
     return nil
   end
 
+  -- Get cursor position (1-indexed row)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local cursor_line = cursor[1]
+
   local original_content = diff.get_original(bufnr)
   local current_content = util.get_buffer_content(bufnr)
 
@@ -223,7 +210,18 @@ function M.get_completion(bufnr, callback)
     return nil
   end
 
-  local prompt, meta = M.build_prompt(file_path, original_content, current_content, {}, diff.get_recent_diffs())
+  -- Extract current window for later comparison with response
+  local current_window, window_start = util.extract_cursor_window(current_content, cursor_line, WINDOW_SIZE)
+  local cursor_line_in_window = cursor_line - window_start + 1
+
+  local prompt, meta = M.build_prompt(
+    file_path,
+    original_content,
+    current_content,
+    cursor_line,
+    {},
+    diff.get_recent_diffs()
+  )
 
   local start_time = vim.uv.hrtime()
 
@@ -239,7 +237,15 @@ function M.get_completion(bufnr, callback)
     meta.err = err
 
     debug_log(meta)
-    callback(response, err)
+
+    if err then
+      callback(nil, err)
+      return
+    end
+
+    -- Extract the completion delta by diffing response against current window
+    local completion = util.extract_completion_delta(current_window, response, cursor_line_in_window)
+    callback(completion, nil)
   end)
 
   return job

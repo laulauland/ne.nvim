@@ -104,199 +104,125 @@ function M.json_decode(str)
   return nil
 end
 
---- Extract smart context around edit regions
---- @param original string Original file content
---- @param current string Current file content
---- @param max_size number Maximum size in bytes for each output
---- @param context_lines number|nil Lines of context around diff (default: 100)
---- @return string, string Truncated original and current with line range headers
-function M.extract_edit_context(original, current, max_size, context_lines)
-  context_lines = context_lines or 100
+--- Extract a fixed window of lines around cursor position
+--- @param content string File content
+--- @param cursor_line number Cursor line (1-indexed)
+--- @param window_size number|nil Total window size (default: 21)
+--- @return string Extracted window content (no headers)
+--- @return number Start line of the window (1-indexed)
+--- @return number End line of the window (1-indexed)
+function M.extract_cursor_window(content, cursor_line, window_size)
+  window_size = window_size or 21
+  local half = math.floor(window_size / 2) -- 10 for default 21
 
-  -- If both fit within budget, return as-is
-  if #original <= max_size and #current <= max_size then
-    return original, current
+  local lines = M.split_lines(content)
+  local total = #lines
+
+  -- Handle empty content
+  if total == 0 then
+    return "", 1, 1
   end
 
-  local orig_lines = M.split_lines(original)
-  local curr_lines = M.split_lines(current)
+  -- Clamp cursor_line to valid range
+  cursor_line = math.max(1, math.min(cursor_line, total))
 
-  local orig_len = #orig_lines
-  local curr_len = #curr_lines
+  -- Calculate window bounds
+  local start_line = math.max(1, cursor_line - half)
+  local end_line = math.min(total, cursor_line + half)
 
-  -- Find first differing line
-  local first_diff = nil
-  local min_len = math.min(orig_len, curr_len)
-  for i = 1, min_len do
-    if orig_lines[i] ~= curr_lines[i] then
-      first_diff = i
-      break
+  -- Adjust if we're near boundaries to maintain window_size when possible
+  if end_line - start_line + 1 < window_size then
+    if start_line == 1 then
+      end_line = math.min(total, start_line + window_size - 1)
+    elseif end_line == total then
+      start_line = math.max(1, end_line - window_size + 1)
     end
   end
 
-  -- If no diff found in common part, diff starts at length difference
-  if not first_diff then
-    if orig_len ~= curr_len then
-      first_diff = min_len + 1
-    else
-      -- Files are identical, return truncated from start
-      return M._truncate_with_header(orig_lines, 1, orig_len, max_size),
-          M._truncate_with_header(curr_lines, 1, curr_len, max_size)
-    end
-  end
-
-  -- Find last differing line (scan from end)
-  local last_diff_orig = orig_len
-  local last_diff_curr = curr_len
-  local orig_end = orig_len
-  local curr_end = curr_len
-
-  while orig_end >= first_diff and curr_end >= first_diff do
-    if orig_lines[orig_end] ~= curr_lines[curr_end] then
-      break
-    end
-    orig_end = orig_end - 1
-    curr_end = curr_end - 1
-  end
-
-  last_diff_orig = math.max(first_diff, orig_end)
-  last_diff_curr = math.max(first_diff, curr_end)
-
-  -- Calculate windows centered on diff regions
-  local orig_start = math.max(1, first_diff - context_lines)
-  local orig_window_end = math.min(orig_len, last_diff_orig + context_lines)
-
-  local curr_start = math.max(1, first_diff - context_lines)
-  local curr_window_end = math.min(curr_len, last_diff_curr + context_lines)
-
-  -- Extract and fit within max_size
-  local orig_result = M._extract_window_fit(orig_lines, orig_start, orig_window_end, first_diff, last_diff_orig, max_size)
-  local curr_result = M._extract_window_fit(curr_lines, curr_start, curr_window_end, first_diff, last_diff_curr, max_size)
-
-  return orig_result, curr_result
-end
-
---- Truncate lines with a header showing line range
---- @param lines table Array of lines
---- @param start_line number Start line (1-indexed)
---- @param end_line number End line (1-indexed)
---- @param max_size number Maximum size in bytes
---- @return string Truncated content with header
-function M._truncate_with_header(lines, start_line, end_line, max_size)
-  local total_lines = #lines
-
-  -- Header format: [lines X-Y of Z]\n
-  local header = string.format("[lines %d-%d of %d]\n", start_line, end_line, total_lines)
-  local header_size = #header
-
-  -- Only add header if we're actually truncating
-  local is_full_file = (start_line == 1 and end_line == total_lines)
-
-  if is_full_file then
-    local content = M.join_lines(lines)
-    if #content <= max_size then
-      return content
-    end
-    -- Need to truncate even the full file
-    header = string.format("[lines 1-? of %d]\n", total_lines)
-    header_size = #header
-  end
-
-  local available = max_size - header_size
-  if available <= 0 then
-    return header .. "..."
-  end
-
-  -- Build content from the window
+  -- Extract the window
   local result_lines = {}
-  local current_size = 0
-  local actual_end = start_line - 1
-
   for i = start_line, end_line do
-    local line = lines[i]
-    local line_size = #line + 1 -- +1 for newline
-    if current_size + line_size > available then
-      break
-    end
-    table.insert(result_lines, line)
-    current_size = current_size + line_size
-    actual_end = i
-  end
-
-  -- Update header with actual end line
-  header = string.format("[lines %d-%d of %d]\n", start_line, actual_end, total_lines)
-
-  return header .. M.join_lines(result_lines)
-end
-
---- Extract a window of lines that fits within max_size, keeping diff region centered
---- @param lines table Array of lines
---- @param window_start number Initial window start
---- @param window_end number Initial window end
---- @param diff_start number First differing line
---- @param diff_end number Last differing line
---- @param max_size number Maximum size in bytes
---- @return string Extracted content with header
-function M._extract_window_fit(lines, window_start, window_end, diff_start, diff_end, max_size)
-  local total_lines = #lines
-
-  -- If window is the entire file and fits, return without header
-  if window_start == 1 and window_end == total_lines then
-    local content = M.join_lines(lines)
-    if #content <= max_size then
-      return content
-    end
-  end
-
-  -- Header overhead estimate
-  local header_template = "[lines %d-%d of %d]\n"
-  local header_overhead = #string.format(header_template, window_start, window_end, total_lines)
-
-  local available = max_size - header_overhead
-  if available <= 0 then
-    return string.format("[lines %d-%d of %d]\n...", window_start, window_start, total_lines)
-  end
-
-  -- Calculate content size for current window
-  local function calc_window_size(ws, we)
-    local size = 0
-    for i = ws, we do
-      size = size + #lines[i] + 1 -- +1 for newline
-    end
-    return size - 1 -- last line has no trailing newline in join
-  end
-
-  -- Shrink window if needed, keeping diff region centered
-  while window_start < window_end do
-    local size = calc_window_size(window_start, window_end)
-    if size <= available then
-      break
-    end
-
-    -- Shrink from the side further from diff center
-    local diff_center = (diff_start + diff_end) / 2
-    local start_dist = diff_center - window_start
-    local end_dist = window_end - diff_center
-
-    -- Don't shrink into the diff region
-    if window_start < diff_start and (start_dist >= end_dist or window_end <= diff_end) then
-      window_start = window_start + 1
-    elseif window_end > diff_end then
-      window_end = window_end - 1
-    else
-      -- Both edges are at diff boundaries, shrink from end
-      window_end = window_end - 1
-    end
-  end
-
-  -- Build result
-  local result_lines = {}
-  for i = window_start, window_end do
     table.insert(result_lines, lines[i])
   end
 
-  local header = string.format("[lines %d-%d of %d]\n", window_start, window_end, total_lines)
-  return header .. M.join_lines(result_lines)
+  return M.join_lines(result_lines), start_line, end_line
+end
+
+--- Extract the completion delta by diffing current window vs model response
+--- Returns only the new/changed text to show as ghost text
+--- @param current_window string Current 21-line window content
+--- @param model_response string Model's rewritten window
+--- @param cursor_line_in_window number Cursor position within the window (1-indexed)
+--- @return string|nil Completion text to show, or nil if no completion
+function M.extract_completion_delta(current_window, model_response, cursor_line_in_window)
+  local current_lines = M.split_lines(current_window)
+  local response_lines = M.split_lines(model_response)
+
+  -- Find the first difference
+  local diff_line = nil
+  local max_common = math.min(#current_lines, #response_lines)
+
+  for i = 1, max_common do
+    if current_lines[i] ~= response_lines[i] then
+      diff_line = i
+      break
+    end
+  end
+
+  -- If no diff found in common lines, check for added lines
+  if not diff_line then
+    if #response_lines > #current_lines then
+      -- Model added lines at the end
+      diff_line = #current_lines + 1
+    else
+      -- No changes or model removed lines (no completion to show)
+      return nil
+    end
+  end
+
+  -- Extract the completion starting from the diff
+  if diff_line <= #response_lines then
+    local completion_lines = {}
+
+    -- For the first diff line, if it's a modification, extract just the added part
+    if diff_line <= #current_lines then
+      local curr_line = current_lines[diff_line]
+      local resp_line = response_lines[diff_line]
+
+      -- Find common prefix
+      local prefix_len = 0
+      local min_len = math.min(#curr_line, #resp_line)
+      for i = 1, min_len do
+        if curr_line:sub(i, i) == resp_line:sub(i, i) then
+          prefix_len = i
+        else
+          break
+        end
+      end
+
+      -- Get the new content after the common prefix
+      local new_part = resp_line:sub(prefix_len + 1)
+      if new_part ~= "" then
+        table.insert(completion_lines, new_part)
+      end
+
+      -- Add any remaining modified/added lines
+      for i = diff_line + 1, #response_lines do
+        table.insert(completion_lines, response_lines[i])
+      end
+    else
+      -- Pure addition - all lines from diff_line onwards are new
+      for i = diff_line, #response_lines do
+        table.insert(completion_lines, response_lines[i])
+      end
+    end
+
+    if #completion_lines > 0 then
+      return M.join_lines(completion_lines)
+    end
+  end
+
+  return nil
 end
 
 return M
