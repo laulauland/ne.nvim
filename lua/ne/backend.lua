@@ -238,9 +238,8 @@ function M.get_completion(bufnr, callback)
     meta.response = response
     meta.err = err
 
-    debug_log(meta)
-
     if err then
+      debug_log(meta)
       callback(nil, err)
       return
     end
@@ -250,6 +249,12 @@ function M.get_completion(bufnr, callback)
     -- Don't trim spaces/tabs as those are meaningful indentation
     local trimmed_response = response:match("^\n*(.-)%s*$") or response
     local completion = util.extract_completion_delta(current_window, trimmed_response, cursor_line_in_window)
+    
+    -- Add completion info to debug log
+    meta.trimmed_response = trimmed_response
+    meta.completion = completion
+    debug_log(meta)
+    
     callback(completion, nil)
   end)
 
