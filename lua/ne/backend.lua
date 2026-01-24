@@ -69,14 +69,16 @@ function M.build_prompt(file_path, original_content, current_content, cursor_lin
   end
 
   -- Add recent diffs (newest first, drop oldest if over budget)
+  -- Format: <|file_sep|>{file}.diff\noriginal:\n{content}\nupdated:\n{content}
   local diff_parts = {}
   local diffs_count = 0
   for _, d in ipairs(recent_diffs) do
     local orig = d.original or ""
     local upd = d.updated or ""
     if orig ~= "" or upd ~= "" then
-      local entry = FILE_SEP .. "original/" .. d.file_path .. "\n" .. orig .. "\n"
-        .. FILE_SEP .. "updated/" .. d.file_path .. "\n" .. upd
+      local entry = FILE_SEP .. d.file_path .. ".diff\n"
+        .. "original:\n" .. orig .. "\n"
+        .. "updated:\n" .. upd
       local entry_size = #entry + 1
       if remaining_budget >= entry_size then
         table.insert(diff_parts, 1, entry) -- prepend to maintain order
