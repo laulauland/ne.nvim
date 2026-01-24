@@ -35,7 +35,7 @@ test("capture and get original state", function()
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end)
 
-test("record_diff stores changes as patch", function()
+test("record_diff stores changes as original/updated", function()
   diff.clear()
 
   local bufnr = vim.api.nvim_create_buf(false, true)
@@ -49,9 +49,10 @@ test("record_diff stores changes as patch", function()
 
   local diffs = diff.get_recent_diffs()
   eq(1, #diffs)
-  eq(true, diffs[1].patch ~= nil and diffs[1].patch ~= "")
-  eq(true, diffs[1].patch:find("-original") ~= nil)
-  eq(true, diffs[1].patch:find("+modified") ~= nil)
+  eq(true, diffs[1].original ~= nil and diffs[1].original ~= "")
+  eq(true, diffs[1].updated ~= nil and diffs[1].updated ~= "")
+  eq(true, diffs[1].original:find("original") ~= nil)
+  eq(true, diffs[1].updated:find("modified") ~= nil)
 
   vim.api.nvim_buf_delete(bufnr, { force = true })
 end)

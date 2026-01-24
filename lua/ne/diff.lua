@@ -33,11 +33,19 @@ function M.record_diff(bufnr)
 
   if original and original ~= current then
     local max_diff_size = config.get("max_diff_size") or 1024
-    local patch = util.unified_diff(original, current, path, max_diff_size)
+
+    -- Use smart truncation to focus on the changed region
+    local truncated_original, truncated_updated = util.extract_edit_context(
+      original,
+      current,
+      max_diff_size,
+      50 -- context lines around diff
+    )
 
     local diff_entry = {
       file_path = path,
-      patch = patch,
+      original = truncated_original,
+      updated = truncated_updated,
     }
 
     table.insert(M.recent_diffs, 1, diff_entry)
@@ -60,7 +68,7 @@ end
 function M.get_diffs_size()
   local size = 0
   for _, d in ipairs(M.recent_diffs) do
-    size = size + #d.file_path + #(d.patch or "")
+    size = size + #d.file_path + #(d.original or "") + #(d.updated or "")
   end
   return size
 end
