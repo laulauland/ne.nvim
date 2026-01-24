@@ -153,31 +153,39 @@ function M.request_completion(prompt, callback)
 
   local json_payload = util.json_encode(payload)
 
+  -- Use stdin (-d @-) to pass payload, avoids escaping issues with large/complex prompts
   local cmd = {
     "curl",
     "-s",
     "--max-time", tostring(timeout),
     "-X", "POST",
     "-H", "Content-Type: application/json",
-    "-d", json_payload,
+    "-d", "@-",
     url,
   }
 
-  local job = vim.system(cmd, { text = true }, function(result)
+  local job = vim.system(cmd, { text = true, stdin = json_payload }, function(result)
     vim.schedule(function()
       if result.code ~= 0 then
         local err_msg = result.stderr or "unknown error"
         if result.code == 28 or err_msg:find("timed out") then
           callback(nil, "request timed out")
         else
-          callback(nil, "curl failed: " .. err_msg)
+          callback(nil, "curl failed (code " .. result.code .. "): " .. err_msg)
         end
         return
       end
 
-      local response = util.json_decode(result.stdout)
+      local stdout = result.stdout or ""
+      if stdout == "" then
+        callback(nil, "empty response from server")
+        return
+      end
+
+      local response = util.json_decode(stdout)
       if not response then
-        callback(nil, "failed to parse response")
+        local preview = stdout:sub(1, 200)
+        callback(nil, "failed to parse response: " .. preview)
         return
       end
 
