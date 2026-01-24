@@ -206,9 +206,25 @@ function M.extract_completion_delta(current_window, model_response, cursor_line_
         table.insert(completion_lines, new_part)
       end
 
-      -- Add any remaining modified/added lines
+      -- Add subsequent lines only if they differ from current
+      -- (for multi-line completions where model adds new lines)
       for i = diff_line + 1, #response_lines do
-        table.insert(completion_lines, response_lines[i])
+        local curr = current_lines[i]
+        local resp = response_lines[i]
+        if curr ~= resp then
+          -- Line differs - add the response line
+          if curr == nil then
+            -- New line added by model
+            table.insert(completion_lines, resp)
+          else
+            -- Line modified - for now just stop here
+            -- (inline completion shouldn't span multiple modified lines)
+            break
+          end
+        else
+          -- Lines match again - stop adding
+          break
+        end
       end
     else
       -- Pure addition - all lines from diff_line onwards are new
