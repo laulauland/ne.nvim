@@ -45,12 +45,22 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
 
   local max_prompt_size = config.get("max_prompt_size") or 8192
 
+  -- Reserve space for context/diffs (at least 20% of budget)
+  local max_file_content_size = math.floor(max_prompt_size * 0.8 / 2) -- Split between original and current
+  local header_overhead = #FILE_SEP * 3 + #"original/" + #"current/" + #"updated/" + #file_path * 3 + 10
+
+  -- Smart context extraction: focus on the region where changes are happening
+  original_content, current_content = util.extract_edit_context(
+    original_content,
+    current_content,
+    max_file_content_size,
+    100 -- context lines around diff
+  )
+
   local parts = {}
 
   -- Calculate base size (file content that we always need)
-  local base_size = #FILE_SEP + #"original/" + #file_path + 1 + #original_content + 1
-    + #FILE_SEP + #"current/" + #file_path + 1 + #current_content + 1
-    + #FILE_SEP + #"updated/" + #file_path + 1
+  local base_size = header_overhead + #original_content + #current_content
 
   local remaining_budget = max_prompt_size - base_size
 

@@ -93,6 +93,170 @@ test("json_encode/decode roundtrip", function()
   eq(42, decoded.num)
 end)
 
+-- extract_edit_context tests
+
+test("extract_edit_context returns unchanged when under budget", function()
+  local original = "line1\nline2\nline3"
+  local current = "line1\nmodified\nline3"
+  local orig_out, curr_out = util.extract_edit_context(original, current, 1000, 10)
+  eq(original, orig_out)
+  eq(current, curr_out)
+end)
+
+test("extract_edit_context finds diff in middle", function()
+  -- Create a file with 20 lines, change in middle
+  local lines = {}
+  for i = 1, 20 do
+    table.insert(lines, "line" .. i)
+  end
+  local original = util.join_lines(lines)
+
+  lines[10] = "CHANGED"
+  local current = util.join_lines(lines)
+
+  -- Use small max_size to force truncation
+  local orig_out, curr_out = util.extract_edit_context(original, current, 100, 3)
+
+  -- Should have line range header
+  assert(orig_out:match("^%[lines %d+%-%d+ of 20%]"), "original should have line range header")
+  assert(curr_out:match("^%[lines %d+%-%d+ of 20%]"), "current should have line range header")
+
+  -- Should contain the changed region
+  assert(curr_out:find("CHANGED"), "current should contain the change")
+end)
+
+test("extract_edit_context handles change at start", function()
+  local lines = {}
+  for i = 1, 20 do
+    table.insert(lines, string.format("this is a longer line number %02d", i))
+  end
+  local original = util.join_lines(lines)
+
+  lines[1] = "FIRST_LINE_CHANGED_HERE"
+  local current = util.join_lines(lines)
+
+  -- Use small max_size to force truncation
+  local orig_out, curr_out = util.extract_edit_context(original, current, 200, 3)
+
+  -- Should start from line 1 and contain the change
+  assert(orig_out:match("%[lines 1%-"), "original should start from line 1")
+  assert(curr_out:match("%[lines 1%-"), "current should start from line 1")
+  assert(curr_out:find("FIRST_LINE_CHANGED"), "current should contain the change")
+end)
+
+test("extract_edit_context handles change at end", function()
+  local lines = {}
+  for i = 1, 20 do
+    table.insert(lines, string.format("this is a longer line number %02d", i))
+  end
+  local original = util.join_lines(lines)
+
+  lines[20] = "LAST_LINE_CHANGED_HERE"
+  local current = util.join_lines(lines)
+
+  -- Use small max_size to force truncation
+  local orig_out, curr_out = util.extract_edit_context(original, current, 200, 3)
+
+  -- Should include line 20 and the change
+  assert(orig_out:match("%-20 of 20%]"), "original should end at line 20")
+  assert(curr_out:match("%-20 of 20%]"), "current should end at line 20")
+  assert(curr_out:find("LAST_LINE_CHANGED"), "current should contain the change")
+end)
+
+test("extract_edit_context handles multiple change regions", function()
+  local lines = {}
+  for i = 1, 30 do
+    table.insert(lines, "line" .. i)
+  end
+  local original = util.join_lines(lines)
+
+  lines[5] = "CHANGE_A"
+  lines[25] = "CHANGE_B"
+  local current = util.join_lines(lines)
+
+  -- With enough budget, should capture both changes
+  local _, curr_out = util.extract_edit_context(original, current, 500, 5)
+
+  assert(curr_out:find("CHANGE_A"), "should contain first change")
+  assert(curr_out:find("CHANGE_B"), "should contain second change")
+end)
+
+test("extract_edit_context respects max_size", function()
+  local lines = {}
+  for i = 1, 100 do
+    table.insert(lines, string.format("this is line number %03d with some content", i))
+  end
+  local original = util.join_lines(lines)
+
+  lines[50] = "MODIFIED LINE IN THE MIDDLE"
+  local current = util.join_lines(lines)
+
+  local max_size = 500
+  local orig_out, curr_out = util.extract_edit_context(original, current, max_size, 20)
+
+  assert(#orig_out <= max_size, "original output should respect max_size")
+  assert(#curr_out <= max_size, "current output should respect max_size")
+end)
+
+test("extract_edit_context handles identical files", function()
+  local original = "line1\nline2\nline3"
+  local current = "line1\nline2\nline3"
+  local orig_out, curr_out = util.extract_edit_context(original, current, 50, 10)
+
+  -- Should return something reasonable (truncated from start if needed)
+  assert(orig_out ~= nil and #orig_out > 0, "should return non-empty original")
+  assert(curr_out ~= nil and #curr_out > 0, "should return non-empty current")
+end)
+
+test("extract_edit_context handles empty files", function()
+  local original = ""
+  local current = "new content"
+  local orig_out, curr_out = util.extract_edit_context(original, current, 100, 10)
+
+  assert(orig_out ~= nil, "should handle empty original")
+  assert(curr_out:find("new content"), "should contain new content")
+end)
+
+test("extract_edit_context handles added lines", function()
+  local original = "line1\nline2"
+  local current = "line1\nline2\nline3\nline4"
+
+  local orig_out, curr_out = util.extract_edit_context(original, current, 100, 10)
+
+  assert(curr_out:find("line3"), "should contain added line3")
+  assert(curr_out:find("line4"), "should contain added line4")
+end)
+
+test("extract_edit_context handles deleted lines", function()
+  local original = "line1\nline2\nline3\nline4"
+  local current = "line1\nline2"
+
+  local orig_out, curr_out = util.extract_edit_context(original, current, 100, 10)
+
+  assert(orig_out:find("line3"), "original should contain deleted line3")
+  assert(orig_out:find("line4"), "original should contain deleted line4")
+end)
+
+test("extract_edit_context line range header format", function()
+  local lines = {}
+  for i = 1, 50 do
+    table.insert(lines, "line" .. i)
+  end
+  local original = util.join_lines(lines)
+
+  lines[25] = "CHANGED"
+  local current = util.join_lines(lines)
+
+  local _, curr_out = util.extract_edit_context(original, current, 200, 5)
+
+  -- Verify header format: [lines X-Y of Z]
+  local start_line, end_line, total = curr_out:match("^%[lines (%d+)%-(%d+) of (%d+)%]")
+  assert(start_line, "should have properly formatted header")
+  assert(tonumber(total) == 50, "total should be 50")
+  assert(tonumber(start_line) <= 25, "start should be at or before change")
+  assert(tonumber(end_line) >= 25, "end should be at or after change")
+end)
+
 print("\n")
 if vim.g.test_failures and vim.g.test_failures > 0 then
   print(string.format("FAILED: %d test(s) failed", vim.g.test_failures))
