@@ -7,7 +7,20 @@ local M = {}
 local FILE_SEP = "<|file_sep|>"
 local STOP_TOKENS = { "<|file_sep|>", "</s>", "<|endoftext|>" }
 
-local function debug_log(prompt, response, err)
+--- Parse truncation header from content
+--- @param content string Content that may have [lines X-Y of Z] header
+--- @return string|nil Truncation info as "X-Y/Z" or nil if not truncated
+local function parse_truncation(content)
+  local start_line, end_line, total = content:match("^%[lines (%d+)%-(%d+) of (%d+)%]")
+  if start_line then
+    return string.format("%s-%s/%s", start_line, end_line, total)
+  end
+  return nil
+end
+
+--- Log debug metadata to JSONL file
+--- @param meta table Metadata table with request info
+local function debug_log(meta)
   local debug_opts = config.get("debug")
   if not debug_opts or not debug_opts.enabled then
     return
@@ -16,29 +29,23 @@ local function debug_log(prompt, response, err)
   local dir = debug_opts.dir
   vim.fn.mkdir(dir, "p")
 
-  local timestamp = os.date("%Y%m%d_%H%M%S")
-  local id = string.format("%s_%d", timestamp, math.random(1000, 9999))
-
-  local prompt_file = string.format("%s/%s_prompt.txt", dir, id)
-  local response_file = string.format("%s/%s_response.txt", dir, id)
-
-  local pf = io.open(prompt_file, "w")
-  if pf then
-    pf:write(prompt)
-    pf:close()
-  end
-
-  local rf = io.open(response_file, "w")
-  if rf then
-    if err then
-      rf:write("ERROR: " .. err)
-    else
-      rf:write(response or "")
-    end
-    rf:close()
+  local jsonl_file = dir .. "/debug.jsonl"
+  local f = io.open(jsonl_file, "a")
+  if f then
+    local line = util.json_encode(meta)
+    f:write(line .. "\n")
+    f:close()
   end
 end
 
+--- Build prompt for completion request
+--- @param file_path string Path to the file being edited
+--- @param original_content string Original file content
+--- @param current_content string Current file content
+--- @param context_files table<string, string> Additional context files
+--- @param recent_diffs table Recent diffs for context
+--- @return string prompt The built prompt
+--- @return table meta Metadata about the prompt contents
 function M.build_prompt(file_path, original_content, current_content, context_files, recent_diffs)
   context_files = context_files or {}
   recent_diffs = recent_diffs or diff.get_recent_diffs()
@@ -50,7 +57,7 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
   local header_overhead = #FILE_SEP * 3 + #"original/" + #"current/" + #"updated/" + #file_path * 3 + 10
 
   -- Smart context extraction: focus on the region where changes are happening
-  original_content, current_content = util.extract_edit_context(
+  local extracted_original, extracted_current = util.extract_edit_context(
     original_content,
     current_content,
     max_file_content_size,
@@ -60,23 +67,26 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
   local parts = {}
 
   -- Calculate base size (file content that we always need)
-  local base_size = header_overhead + #original_content + #current_content
+  local base_size = header_overhead + #extracted_original + #extracted_current
 
   local remaining_budget = max_prompt_size - base_size
 
   -- Add context files (newest first, drop if over budget)
   local context_parts = {}
+  local ctx_files_count = 0
   for path, content in pairs(context_files) do
     local entry = FILE_SEP .. path .. "\n" .. content
     local entry_size = #entry + 1
     if remaining_budget >= entry_size then
       table.insert(context_parts, entry)
       remaining_budget = remaining_budget - entry_size
+      ctx_files_count = ctx_files_count + 1
     end
   end
 
   -- Add recent diffs (newest first, drop oldest if over budget)
   local diff_parts = {}
+  local diffs_count = 0
   for _, d in ipairs(recent_diffs) do
     local orig = d.original or ""
     local upd = d.updated or ""
@@ -88,6 +98,7 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
       if remaining_budget >= entry_size then
         table.insert(diff_parts, 1, entry) -- prepend to maintain order
         remaining_budget = remaining_budget - entry_size
+        diffs_count = diffs_count + 1
       end
     end
   end
@@ -101,12 +112,26 @@ function M.build_prompt(file_path, original_content, current_content, context_fi
   end
 
   table.insert(parts, FILE_SEP .. "original/" .. file_path)
-  table.insert(parts, original_content)
+  table.insert(parts, extracted_original)
   table.insert(parts, FILE_SEP .. "current/" .. file_path)
-  table.insert(parts, current_content)
+  table.insert(parts, extracted_current)
   table.insert(parts, FILE_SEP .. "updated/" .. file_path)
 
-  return table.concat(parts, "\n")
+  local prompt = table.concat(parts, "\n")
+
+  -- Build metadata
+  local meta = {
+    file = file_path,
+    orig_size = #extracted_original,
+    orig_truncated = parse_truncation(extracted_original),
+    curr_size = #extracted_current,
+    curr_truncated = parse_truncation(extracted_current),
+    diffs = diffs_count,
+    ctx_files = ctx_files_count,
+    prompt_size = #prompt,
+  }
+
+  return prompt, meta
 end
 
 --- Request completion from the backend
@@ -190,10 +215,22 @@ function M.get_completion(bufnr, callback)
     return nil
   end
 
-  local prompt = M.build_prompt(file_path, original_content, current_content, {}, diff.get_recent_diffs())
+  local prompt, meta = M.build_prompt(file_path, original_content, current_content, {}, diff.get_recent_diffs())
+
+  local start_time = vim.uv.hrtime()
 
   local job = M.request_completion(prompt, function(response, err)
-    debug_log(prompt, response, err)
+    local end_time = vim.uv.hrtime()
+    local latency_ms = math.floor((end_time - start_time) / 1000000)
+
+    meta.ts = os.date("!%Y-%m-%dT%H:%M:%S")
+    meta.resp_size = response and #response or 0
+    meta.latency_ms = latency_ms
+    meta.prompt = prompt
+    meta.response = response
+    meta.err = err
+
+    debug_log(meta)
     callback(response, err)
   end)
 
