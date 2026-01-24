@@ -246,7 +246,9 @@ function M.get_completion(bufnr, callback)
     end
 
     -- Extract the completion delta by diffing response against current window
-    local completion = util.extract_completion_delta(current_window, response, cursor_line_in_window)
+    -- Trim leading/trailing whitespace from response (model often adds leading newline)
+    local trimmed_response = response:match("^%s*(.-)%s*$") or response
+    local completion = util.extract_completion_delta(current_window, trimmed_response, cursor_line_in_window)
     callback(completion, nil)
   end)
 
