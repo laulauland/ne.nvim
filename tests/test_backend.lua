@@ -59,12 +59,11 @@ test("build_prompt includes context files", function()
   contains(prompt, "def helper(): pass")
 end)
 
-test("build_prompt includes recent diffs", function()
+test("build_prompt includes recent diffs as patches", function()
   local diffs = {
     {
       file_path = "other.py",
-      original = "old code",
-      updated = "new code",
+      patch = "--- a/other.py\n+++ b/other.py\n@@ -1,1 +1,1 @@\n-old code\n+new code",
     },
   }
 
@@ -77,16 +76,14 @@ test("build_prompt includes recent diffs", function()
   )
 
   contains(prompt, "<|file_sep|>other.py.diff")
-  contains(prompt, "original:")
-  contains(prompt, "old code")
-  contains(prompt, "updated:")
-  contains(prompt, "new code")
+  contains(prompt, "-old code")
+  contains(prompt, "+new code")
 end)
 
 test("build_prompt ordering is correct", function()
   local context = { ["ctx.py"] = "context" }
   local diffs = {
-    { file_path = "d.py", original = "o", updated = "u" },
+    { file_path = "d.py", patch = "--- a/d.py\n+++ b/d.py\n@@ -1,1 +1,1 @@\n-o\n+u" },
   }
 
   local prompt = backend.build_prompt("main.py", "orig", "curr", context, diffs)

@@ -32,10 +32,12 @@ function M.record_diff(bufnr)
   local current = util.get_buffer_content(bufnr)
 
   if original and original ~= current then
+    local max_diff_size = config.get("max_diff_size") or 1024
+    local patch = util.unified_diff(original, current, path, max_diff_size)
+
     local diff_entry = {
       file_path = path,
-      original = original,
-      updated = current,
+      patch = patch,
     }
 
     table.insert(M.recent_diffs, 1, diff_entry)
@@ -51,6 +53,16 @@ end
 
 function M.get_recent_diffs()
   return M.recent_diffs
+end
+
+--- Get total size of all recent diffs in bytes
+--- @return number Total size in bytes
+function M.get_diffs_size()
+  local size = 0
+  for _, d in ipairs(M.recent_diffs) do
+    size = size + #d.file_path + #(d.patch or "")
+  end
+  return size
 end
 
 function M.clear()

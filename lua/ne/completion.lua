@@ -8,6 +8,13 @@ local M = {}
 M.ns_id = vim.api.nvim_create_namespace("ne")
 M.inlay = nil
 M.pending_request = false
+M.current_job = nil
+
+-- Latency tracking for smart debouncing
+M.latency_samples = {}
+M.max_latency_samples = 10
+M.current_debounce_ms = nil
+M.debounce_timer = nil
 
 function M.dispose()
   if M.inlay and M.inlay.bufnr and vim.api.nvim_buf_is_valid(M.inlay.bufnr) then
@@ -134,21 +141,83 @@ function M.accept_word()
   vim.api.nvim_win_set_cursor(0, { row + 1, col + #word })
 end
 
+--- Cancel any pending request
+function M.cancel_pending()
+  if M.current_job then
+    pcall(function()
+      M.current_job:kill()
+    end)
+    M.current_job = nil
+  end
+  M.pending_request = false
+end
+
+--- Record response latency and adjust debounce time
+--- @param latency_ms number Response latency in milliseconds
+local function record_latency(latency_ms)
+  table.insert(M.latency_samples, latency_ms)
+  while #M.latency_samples > M.max_latency_samples do
+    table.remove(M.latency_samples, 1)
+  end
+
+  -- Calculate average latency
+  local sum = 0
+  for _, lat in ipairs(M.latency_samples) do
+    sum = sum + lat
+  end
+  local avg_latency = sum / #M.latency_samples
+
+  -- Adjust debounce based on latency
+  local min_debounce = config.get("debounce_ms_min") or 300
+  local max_debounce = config.get("debounce_ms_max") or 1000
+
+  if avg_latency > 3000 then
+    -- If responses consistently take 3+ seconds, increase debounce
+    M.current_debounce_ms = math.min(max_debounce, min_debounce + (avg_latency - 3000) / 10)
+  else
+    -- Fast responses, use minimum debounce
+    M.current_debounce_ms = min_debounce
+  end
+end
+
+--- Get current debounce time in milliseconds
+--- @return number Debounce time in ms
+function M.get_debounce_ms()
+  return M.current_debounce_ms or config.get("debounce_ms") or config.defaults.debounce_ms
+end
+
 function M.trigger()
   local bufnr = vim.api.nvim_get_current_buf()
 
+  -- Cancel any pending request before starting a new one
   if M.pending_request then
-    return
+    M.cancel_pending()
   end
 
   M.pending_request = true
+  local start_time = vim.uv.hrtime()
 
-  backend.get_completion(bufnr, function(completion, err)
+  M.current_job = backend.get_completion(bufnr, function(completion, err)
+    local end_time = vim.uv.hrtime()
+    local latency_ms = (end_time - start_time) / 1000000
+
     M.pending_request = false
+    M.current_job = nil
 
     if err then
+      -- Don't record latency for cancelled/failed requests
+      if err ~= "request timed out" and not err:find("kill") then
+        return
+      end
+      -- Record slow latency for timeouts to increase debounce
+      if err == "request timed out" then
+        record_latency(10000)
+      end
       return
     end
+
+    -- Record successful response latency
+    record_latency(latency_ms)
 
     if completion then
       M.render(bufnr, completion)
@@ -160,10 +229,27 @@ function M.has_suggestion()
   return M.inlay ~= nil and M.inlay.completion_text and M.inlay.completion_text ~= ""
 end
 
-M.trigger_debounced = util.debounce(M.trigger, config.defaults.debounce_ms)
+--- Debounced trigger with dynamic debounce time
+function M.trigger_debounced()
+  if M.debounce_timer then
+    M.debounce_timer:stop()
+  else
+    M.debounce_timer = vim.uv.new_timer()
+  end
+
+  local debounce_ms = M.get_debounce_ms()
+  M.debounce_timer:start(debounce_ms, 0, function()
+    M.debounce_timer:stop()
+    vim.schedule(function()
+      M.trigger()
+    end)
+  end)
+end
 
 function M.on_text_changed()
   M.dispose()
+  -- Cancel pending request when text changes
+  M.cancel_pending()
   if config.get("auto_trigger") then
     M.trigger_debounced()
   end

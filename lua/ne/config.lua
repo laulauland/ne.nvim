@@ -5,8 +5,17 @@ M.defaults = {
   max_tokens = 512,
   temperature = 0.0,
   debounce_ms = 300,
+  debounce_ms_min = 300,
+  debounce_ms_max = 1000,
+  request_timeout = 10,
+  max_prompt_size = 8192,
+  max_diff_size = 1024,
   auto_trigger = true,
   suggestion_hl_group = "Comment",
+  debug = {
+    enabled = false,
+    dir = vim.fn.expand("~/.local/share/ne/debug"),
+  },
   keymaps = {
     accept_suggestion = "<Tab>",
     accept_word = "<C-Right>",
